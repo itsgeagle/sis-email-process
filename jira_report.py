@@ -1,3 +1,10 @@
+import warnings
+warnings.warn(
+    "This script is deprecated. Use 'python app.py' for auto-scanning via Jira filter.",
+    DeprecationWarning,
+    stacklevel=1,
+)
+
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys

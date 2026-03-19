@@ -1,3 +1,10 @@
+import warnings
+warnings.warn(
+    "This script is deprecated. Incident CSV lookup is now handled by app.py.",
+    DeprecationWarning,
+    stacklevel=1,
+)
+
 import pandas as pd
 
 file_path = "inputs/incident.csv"

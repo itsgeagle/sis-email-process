@@ -1,0 +1,16 @@
+# Environment and credentials
+.env
+Automatic SNOW Emails/.env
+Automatic SNOW Emails/inputs/token.txt
+Automatic SNOW Emails/inputs/incident.csv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Output
+Automatic SNOW Emails/filled_templates/
+Automatic SNOW Emails/downloads/
+.venv
+*.md

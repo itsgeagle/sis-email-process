@@ -1,3 +1,10 @@
+import warnings
+warnings.warn(
+    "This script is deprecated. Use 'python app.py' instead.",
+    DeprecationWarning,
+    stacklevel=1,
+)
+
 import os
 import shutil
 from generate_template import generate_template

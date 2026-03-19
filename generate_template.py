@@ -1,3 +1,10 @@
+import warnings
+warnings.warn(
+    "This module is deprecated. Use 'python app.py' instead (see email_generator.py, jira_client.py).",
+    DeprecationWarning,
+    stacklevel=1,
+)
+
 import requests
 import os
 import re
