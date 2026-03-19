@@ -9,10 +9,7 @@ You now have been granted access to UC Berkeley's Student Information Systems. T
 An employee event or change in job duties will trigger a review and potential loss of some or all currently assigned roles/access. In order to regain access to roles or access thereafter, you will need to complete a new Access Request form.
 
 
-        You have been granted the following roles:
-        • CLONE - Not Needed
-        • CLONE - Student Finance View Student Account for Paredes, Jesse
-        • CLONE - Not Needed
+        You have been granted the access to all of your requested roles.
 
 
 Please select SIS Campus Solutions or paste the following URL into your address bar:

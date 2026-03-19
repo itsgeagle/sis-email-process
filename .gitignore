@@ -8,7 +8,9 @@ __pycache__/
 *.pyo
 
 # Output
-Automatic SNOW Emails/filled_templates/
-Automatic SNOW Emails/downloads/
+filled_templates/
+downloads/
 .venv
-*.md
+
+# AI
+CLAUDE.md
