@@ -122,7 +122,7 @@ def process_ticket(jira: JiraClient, ticket_id: str, snow: SnowAutomation | None
     while True:
         console.print(Panel(email_text, title="[bold]Email Preview[/]", border_style="cyan", padding=(1, 2)))
 
-        choices = ["Save to file only", "Edit email", "Skip this ticket"]
+        choices = ["Save to file only", "Copy to clipboard", "Edit email", "Skip this ticket"]
         if snow is not None:
             choices.insert(0, "Send to ServiceNow")
 
@@ -149,6 +149,20 @@ def process_ticket(jira: JiraClient, ticket_id: str, snow: SnowAutomation | None
             result["action"] = "Saved"
             result["status"] = path
             return result
+
+        if action == "Copy to clipboard":
+            try:
+                subprocess.run(
+                    ["pbcopy"] if sys.platform == "darwin"
+                    else ["clip.exe"] if sys.platform == "win32"
+                    else ["xclip", "-selection", "clipboard"],
+                    input=email_text.encode(),
+                    check=True,
+                )
+                console.print("[green]Copied to clipboard![/]")
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                console.print("[red]Failed to copy — clipboard tool not available.[/]")
+            continue  # Show preview again
 
         if action == "Send to ServiceNow":
             success = _send_to_snow(snow, user_name, email_text, incident_number)

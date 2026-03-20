@@ -14,3 +14,7 @@ downloads/
 
 # AI
 CLAUDE.md
+.claude
+
+# MacOS
+.DS_Store
