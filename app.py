@@ -279,9 +279,9 @@ def _send_to_snow(
                     inc_num = choice.split(" — ")[0]
                     snow.open_incident(inc_num)
 
-        # Post work note
-        console.print("[cyan]Posting work note...[/]")
-        snow.post_work_note(email_text)
+        # Post additional comment (customer visible)
+        console.print("[cyan]Posting comment...[/]")
+        snow.post_comment(email_text)
 
         # Resolve
         console.print("[cyan]Resolving incident...[/]")

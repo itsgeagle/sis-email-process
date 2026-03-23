@@ -240,36 +240,38 @@ class SnowAutomation:
 
         logger.info("Opened incident %s", incident_number)
 
-    def post_work_note(self, text: str):
-        """Add a work note to the currently open incident."""
+    def post_comment(self, text: str):
+        """Add an additional comment (customer visible) to the currently open incident.
+
+        The activity stream textarea (id="activity-stream-textarea") defaults to
+        "Additional comments" mode, so we just need to find it and type.
+        """
         try:
-            # In classic form (possibly inside iframe), find work notes
-            # First try clicking the "Work notes" tab/label to switch to it
-            tab_selectors = [
-                (By.CSS_SELECTOR, "span.tab_caption_text[title='Work notes']"),
-                (By.CSS_SELECTOR, "label[for*='work_notes']"),
-                (By.CSS_SELECTOR, "#work_notes_label"),
-                (By.XPATH, "//span[contains(text(), 'Work notes')]"),
-                (By.XPATH, "//a[contains(text(), 'Work Notes')]"),
+            # Ensure the input type is set to comments (the default).
+            # Click the "Additional comments" toggle if present, in case a
+            # previous action switched it to work notes.
+            comments_toggle_selectors = [
+                (By.CSS_SELECTOR, "[data-stream-text-input='comments']"),
+                (By.XPATH, "//a[contains(text(), 'Additional comments')]"),
+                (By.XPATH, "//span[contains(text(), 'Additional comments')]"),
             ]
-            for by, selector in tab_selectors:
+            for by, selector in comments_toggle_selectors:
                 try:
-                    tab = self._wait_for(by, selector, timeout=3, clickable=True)
-                    tab.click()
+                    toggle = self._wait_for(by, selector, timeout=3, clickable=True)
+                    toggle.click()
                     time.sleep(UI_PAUSE)
+                    logger.debug("Ensured activity stream is on Additional comments")
                     break
                 except TimeoutException:
                     continue
 
-            # Now find the textarea
-            textarea_selectors = [
-                (By.ID, "activity-stream-work_notes-textarea"),
-                (By.CSS_SELECTOR, "textarea[id*='work_notes']"),
-                (By.CSS_SELECTOR, "textarea[name='work_notes']"),
-                (By.ID, "incident.work_notes"),
-            ]
-
+            # Find the shared activity stream textarea
             textarea = None
+            textarea_selectors = [
+                (By.ID, "activity-stream-textarea"),
+                (By.CSS_SELECTOR, "textarea[data-stream-text-input]"),
+                (By.CSS_SELECTOR, "textarea.sn-string-textarea"),
+            ]
             for by, selector in textarea_selectors:
                 try:
                     textarea = self._wait_for(by, selector, timeout=5)
@@ -279,20 +281,20 @@ class SnowAutomation:
 
             if textarea is None:
                 raise SnowAutomationError(
-                    "Could not find the work notes textarea. "
-                    "Please add the work note manually in the browser."
+                    "Could not find the activity stream textarea. "
+                    "Please add the comment manually in the browser."
                 )
 
             textarea.click()
             time.sleep(UI_PAUSE / 2)
             textarea.clear()
             textarea.send_keys(text)
-            logger.info("Work note text entered")
+            logger.info("Additional comment text entered")
 
         except SnowAutomationError:
             raise
         except Exception as e:
-            raise SnowAutomationError(f"Failed to post work note: {e}")
+            raise SnowAutomationError(f"Failed to post comment: {e}")
 
     def resolve_incident(self):
         """Fill resolution fields and save the incident.
