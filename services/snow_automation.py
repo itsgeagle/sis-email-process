@@ -1,8 +1,7 @@
 """Selenium-based ServiceNow automation for incident resolution.
 
-Targets the Next Experience UI (Polaris) used by berkeley.service-now.com.
-URLs follow the /now/nav/ui/ pattern. Most elements are inside shadow DOM
-or web components, so we use a mix of CSS selectors and JavaScript execution.
+Uses classic ServiceNow URLs (incident.do, incident_list.do) to avoid
+the Next Experience (Polaris) shadow DOM that hides elements from Selenium.
 """
 
 import logging
@@ -19,9 +18,9 @@ from selenium.common.exceptions import TimeoutException
 logger = logging.getLogger(__name__)
 
 # Timeout for element waits (seconds)
-WAIT_TIMEOUT = 30
+WAIT_TIMEOUT = 15
 # Short pause for UI animations/transitions
-UI_PAUSE = 2
+UI_PAUSE = 1
 
 
 class SnowAutomationError(Exception):
@@ -31,13 +30,15 @@ class SnowAutomationError(Exception):
 class SnowAutomation:
     """Automate ServiceNow incident operations via Chrome browser.
 
-    Targets the Next Experience (Polaris) UI. The browser session stays
+    Uses classic ServiceNow URLs so all form elements are directly
+    accessible to Selenium (no shadow DOM). The browser session stays
     open between operations so CalNet SSO login only needs to happen once.
     """
 
     def __init__(self, instance_url: str):
         self.instance_url = instance_url.rstrip("/")
         self.driver = None
+        self._in_iframe = False
 
     def _ensure_driver(self):
         """Start Chrome if not already running."""
@@ -56,25 +57,44 @@ class SnowAutomation:
         )
         return WebDriverWait(self.driver, timeout).until(condition)
 
+    def _wait_for_page_ready(self, timeout=WAIT_TIMEOUT):
+        """Wait for the page to finish loading instead of using fixed sleeps."""
+        WebDriverWait(self.driver, timeout).until(
+            lambda d: d.execute_script("return document.readyState") == "complete"
+        )
+        # Brief pause for dynamic rendering after DOM ready
+        time.sleep(UI_PAUSE)
+
+    def _switch_to_iframe_if_present(self, timeout=5):
+        """Switch into gsft_main iframe if present, updating _in_iframe flag."""
+        self._in_iframe = False
+        try:
+            iframe = self._wait_for(
+                By.CSS_SELECTOR, "iframe[name='gsft_main'], iframe.embed", timeout=timeout
+            )
+            self.driver.switch_to.frame(iframe)
+            self._in_iframe = True
+        except TimeoutException:
+            pass
+
     def start_session(self):
         """Open ServiceNow and let the user complete SSO login.
 
-        Detects login completion by waiting for the URL to contain '/now/'
-        (the Next Experience landing page), since shadow DOM prevents
-        reliable element-based detection.
+        Navigates to the instance URL and waits for the browser to land
+        on a post-login page.
         """
         self._ensure_driver()
         self.driver.get(self.instance_url)
         logger.info("Navigated to %s — complete SSO login if prompted", self.instance_url)
 
-        # Wait for URL to land on the Next Experience home page.
-        # After CalNet SSO + Duo, the browser redirects to something like:
-        #   https://berkeley.service-now.com/now/nav/ui/home
         try:
             WebDriverWait(self.driver, 180).until(
                 lambda d: "/now/" in d.current_url
                 or "navpage.do" in d.current_url
                 or "home" in d.current_url
+                or "incident.do" in d.current_url
+                or "nav_to.do" in d.current_url
+                or "welcome.do" in d.current_url
             )
             logger.info("SSO login complete (URL: %s)", self.driver.current_url)
         except TimeoutException:
@@ -84,8 +104,7 @@ class SnowAutomation:
     def find_incident_by_search(self, search_query: str) -> list[dict]:
         """Search ServiceNow for incidents matching a query string.
 
-        Uses the incident list URL with a sysparm_query filter, which works
-        in both classic and Next Experience (SNOW redirects appropriately).
+        Uses the classic incident_list.do URL directly to avoid shadow DOM.
 
         Args:
             search_query: Text to search for in short_description (typically user name).
@@ -95,50 +114,23 @@ class SnowAutomation:
         """
         self._ensure_driver()
 
-        # Use the classic list URL — SNOW Next Experience will render it
-        # within its workspace. This is more reliable than trying to
-        # interact with the Polaris search components.
-        encoded_query = urllib.parse.quote(
-            f"short_descriptionLIKE{search_query}^active=true",
-            safe="=^",
-        )
         list_url = (
-            f"{self.instance_url}/now/nav/ui/classic/params/target/incident_list.do"
-            f"%3Fsysparm_query%3D{urllib.parse.quote(f'short_descriptionLIKE{search_query}^active=true', safe='')}"
+            f"{self.instance_url}/incident_list.do"
+            f"?sysparm_query=short_descriptionLIKE{urllib.parse.quote(search_query)}^active=true"
         )
         self.driver.get(list_url)
-        time.sleep(UI_PAUSE * 3)  # Next Experience takes time to load embedded classic frames
+        self._wait_for_page_ready()
 
         incidents = self._scrape_incident_list()
-
-        if not incidents:
-            # Fallback: try direct classic URL
-            classic_url = (
-                f"{self.instance_url}/incident_list.do"
-                f"?sysparm_query=short_descriptionLIKE{urllib.parse.quote(search_query)}^active=true"
-            )
-            self.driver.get(classic_url)
-            time.sleep(UI_PAUSE * 3)
-            incidents = self._scrape_incident_list()
-
         logger.info("Found %d incidents matching '%s'", len(incidents), search_query)
         return incidents
 
     def _scrape_incident_list(self) -> list[dict]:
-        """Scrape incident numbers and descriptions from the current page.
-
-        Handles both Next Experience embedded frames and classic list views.
-        """
+        """Scrape incident numbers and descriptions from the current page."""
         incidents = []
 
-        # Try to find an iframe (classic content embedded in Next Experience)
-        original_frame = None
-        try:
-            iframe = self._wait_for(By.CSS_SELECTOR, "iframe[name='gsft_main'], iframe.embed", timeout=8)
-            self.driver.switch_to.frame(iframe)
-            original_frame = True
-        except TimeoutException:
-            pass  # Not in a framed layout, or pure Next Experience
+        # Classic URL may still render inside an iframe in some configs
+        self._switch_to_iframe_if_present(timeout=3)
 
         try:
             # Strategy 1: Classic list table rows
@@ -151,10 +143,8 @@ class SnowAutomation:
                 if inc:
                     incidents.append(inc)
 
-            # Strategy 2: If no classic rows, look for Next Experience list items
+            # Strategy 2: Links containing INC numbers
             if not incidents:
-                # Next Experience renders lists as <now-record-list> or similar
-                # Try extracting via links that contain INC numbers
                 links = self.driver.find_elements(
                     By.CSS_SELECTOR,
                     "a[href*='incident.do'], a[aria-label*='INC'], [data-short-description]"
@@ -167,7 +157,7 @@ class SnowAutomation:
                             "short_description": link.get_attribute("aria-label") or "",
                         })
 
-            # Strategy 3: Just find any text that looks like an incident number
+            # Strategy 3: Regex scan of page text
             if not incidents:
                 page_text = self.driver.find_element(By.TAG_NAME, "body").text
                 import re
@@ -178,15 +168,15 @@ class SnowAutomation:
         except Exception as e:
             logger.warning("Error scraping incident list: %s", e)
         finally:
-            if original_frame:
+            if self._in_iframe:
                 self.driver.switch_to.default_content()
+                self._in_iframe = False
 
         return incidents
 
     def _parse_classic_row(self, row) -> dict | None:
         """Parse an incident number and description from a classic list table row."""
         try:
-            # Look for a link with the incident number
             links = row.find_elements(By.TAG_NAME, "a")
             number = ""
             for link in links:
@@ -196,7 +186,6 @@ class SnowAutomation:
                     break
 
             if not number:
-                # Try all cells
                 cells = row.find_elements(By.TAG_NAME, "td")
                 for cell in cells:
                     text = cell.text.strip()
@@ -207,7 +196,6 @@ class SnowAutomation:
             if not number:
                 return None
 
-            # Get short description — usually in a cell with more text
             short_desc = ""
             cells = row.find_elements(By.TAG_NAME, "td")
             for cell in cells:
@@ -221,24 +209,55 @@ class SnowAutomation:
             return None
 
     def open_incident(self, incident_number: str):
-        """Navigate directly to a specific incident by number."""
+        """Navigate directly to a specific incident using the classic URL."""
         self._ensure_driver()
-        # Use the classic URL pattern — works in both classic and Next Experience
         url = (
-            f"{self.instance_url}/now/nav/ui/classic/params/target/"
-            f"incident.do%3Fsysparm_query%3Dnumber%3D{incident_number}"
+            f"{self.instance_url}/incident.do"
+            f"?sysparm_query=number={incident_number}"
         )
         self.driver.get(url)
-        time.sleep(UI_PAUSE * 3)
-
-        # Switch to iframe if present (classic form embedded in Next Experience)
-        try:
-            iframe = self._wait_for(By.CSS_SELECTOR, "iframe[name='gsft_main'], iframe.embed", timeout=10)
-            self.driver.switch_to.frame(iframe)
-        except TimeoutException:
-            pass
-
+        self._wait_for_page_ready()
+        self._switch_to_iframe_if_present(timeout=5)
         logger.info("Opened incident %s", incident_number)
+
+    def _find_textarea(self):
+        """Search for the activity stream textarea in all frame contexts.
+
+        Returns the textarea element, or None. Leaves the driver in
+        whichever frame context the textarea was found in.
+        """
+        selectors = [
+            (By.ID, "activity-stream-textarea"),
+            (By.CSS_SELECTOR, "textarea[data-stream-text-input]"),
+            (By.CSS_SELECTOR, "textarea.sn-string-textarea"),
+        ]
+
+        # Try current context first
+        for by, selector in selectors:
+            try:
+                return self._wait_for(by, selector, timeout=3)
+            except TimeoutException:
+                continue
+
+        # Try the other context (if in iframe → outer, if outer → iframe)
+        if self._in_iframe:
+            self.driver.switch_to.default_content()
+        else:
+            try:
+                iframe = self._wait_for(
+                    By.CSS_SELECTOR, "iframe[name='gsft_main'], iframe.embed", timeout=3
+                )
+                self.driver.switch_to.frame(iframe)
+            except TimeoutException:
+                return None
+
+        for by, selector in selectors:
+            try:
+                return self._wait_for(by, selector, timeout=3)
+            except TimeoutException:
+                continue
+
+        return None
 
     def post_comment(self, text: str):
         """Add an additional comment (customer visible) to the currently open incident.
@@ -247,37 +266,7 @@ class SnowAutomation:
         "Additional comments" mode, so we just need to find it and type.
         """
         try:
-            # Ensure the input type is set to comments (the default).
-            # Click the "Additional comments" toggle if present, in case a
-            # previous action switched it to work notes.
-            comments_toggle_selectors = [
-                (By.CSS_SELECTOR, "[data-stream-text-input='comments']"),
-                (By.XPATH, "//a[contains(text(), 'Additional comments')]"),
-                (By.XPATH, "//span[contains(text(), 'Additional comments')]"),
-            ]
-            for by, selector in comments_toggle_selectors:
-                try:
-                    toggle = self._wait_for(by, selector, timeout=3, clickable=True)
-                    toggle.click()
-                    time.sleep(UI_PAUSE)
-                    logger.debug("Ensured activity stream is on Additional comments")
-                    break
-                except TimeoutException:
-                    continue
-
-            # Find the shared activity stream textarea
-            textarea = None
-            textarea_selectors = [
-                (By.ID, "activity-stream-textarea"),
-                (By.CSS_SELECTOR, "textarea[data-stream-text-input]"),
-                (By.CSS_SELECTOR, "textarea.sn-string-textarea"),
-            ]
-            for by, selector in textarea_selectors:
-                try:
-                    textarea = self._wait_for(by, selector, timeout=5)
-                    break
-                except TimeoutException:
-                    continue
+            textarea = self._find_textarea()
 
             if textarea is None:
                 raise SnowAutomationError(
@@ -285,11 +274,47 @@ class SnowAutomation:
                     "Please add the comment manually in the browser."
                 )
 
+            # Ensure we're on "Additional comments" (not "Work notes").
+            current_type = textarea.get_attribute("data-stream-text-input")
+            if current_type and current_type != "comments":
+                comments_toggle_selectors = [
+                    (By.CSS_SELECTOR, "[data-stream-text-input='comments']"),
+                    (By.XPATH, "//a[contains(text(), 'Additional comments')]"),
+                    (By.XPATH, "//span[contains(text(), 'Additional comments')]"),
+                ]
+                for by, selector in comments_toggle_selectors:
+                    try:
+                        toggle = self._wait_for(by, selector, timeout=2, clickable=True)
+                        toggle.click()
+                        time.sleep(UI_PAUSE)
+                        break
+                    except TimeoutException:
+                        continue
+
             textarea.click()
             time.sleep(UI_PAUSE / 2)
             textarea.clear()
             textarea.send_keys(text)
             logger.info("Additional comment text entered")
+
+            # Click the Post button to submit the comment
+            post_selectors = [
+                (By.CSS_SELECTOR, "button.activity-submit"),
+                (By.CSS_SELECTOR, "button[id*='post']"),
+                (By.XPATH, "//button[contains(text(), 'Post')]"),
+                (By.CSS_SELECTOR, "input[value='Post']"),
+            ]
+            for by, selector in post_selectors:
+                try:
+                    post_btn = self._wait_for(by, selector, timeout=3, clickable=True)
+                    post_btn.click()
+                    time.sleep(UI_PAUSE)
+                    logger.info("Comment posted")
+                    break
+                except TimeoutException:
+                    continue
+            else:
+                logger.warning("Could not find Post button — comment was typed but may need manual posting")
 
         except SnowAutomationError:
             raise
@@ -303,12 +328,28 @@ class SnowAutomation:
         state=Resolved, close_code=Solved, close_notes=Security access updated.
         """
         try:
+            # Ensure we're in the right frame context for g_form access.
+            self.driver.switch_to.default_content()
+            self._switch_to_iframe_if_present(timeout=5)
+
+            # Assign to current logged-in user
+            try:
+                self.driver.execute_script("""
+                    if (typeof g_form !== 'undefined' && typeof g_user !== 'undefined') {
+                        g_form.setValue('assigned_to', g_user.userID);
+                    }
+                """)
+                time.sleep(UI_PAUSE / 2)
+                logger.debug("Set assigned_to to current user")
+            except Exception as e:
+                logger.warning("Could not set assigned_to: %s", e)
+
             field_updates = [
                 ("incident.category", "Service Request"),
-                ("incident.impact", "3"),       # 3 = Individual/Low
+                ("incident.impact", "4"),       # 4 = Individual
                 ("incident.urgency", "3"),       # 3 = Low
                 ("incident.state", "6"),         # 6 = Resolved
-                ("incident.close_code", "Solved (Permanently)"),
+                ("incident.close_code", "Solved"),
             ]
 
             for field_id, value in field_updates:
@@ -350,11 +391,7 @@ class SnowAutomation:
 
     def _set_field(self, field_id: str, value: str):
         """Set a select/dropdown field by its ID using JavaScript for reliability."""
-        # ServiceNow classic forms respond best to JavaScript-driven changes
-        # because they use onChange handlers tied to GlideForm
         try:
-            # First try GlideForm API (most reliable in classic forms)
-            # g_form.setValue() triggers all the right server-side logic
             field_name = field_id.replace("incident.", "")
             result = self.driver.execute_script(
                 f"""
@@ -395,7 +432,6 @@ class SnowAutomation:
 
     def _set_text_field(self, field_id: str, value: str):
         """Set a text/textarea field."""
-        # Try GlideForm first
         field_name = field_id.replace("incident.", "")
         try:
             result = self.driver.execute_script(

@@ -93,6 +93,36 @@ class JiraClient:
 
         return all_issues
 
+    def close_issue(self, ticket_id: str):
+        """Transition a Jira issue to 'Close Issue' status."""
+        url = f"{self.server}/rest/api/2/issue/{ticket_id}/transitions"
+
+        # Get available transitions
+        resp = self.session.get(url)
+        if resp.status_code != 200:
+            raise JiraError(ticket_id, resp.status_code, resp.text[:200])
+
+        transitions = resp.json().get("transitions", [])
+        close_transition = None
+        for t in transitions:
+            if t["name"].lower() == "close issue":
+                close_transition = t
+                break
+
+        if not close_transition:
+            available = [t["name"] for t in transitions]
+            raise JiraError(
+                ticket_id, 0,
+                f"'Close Issue' transition not available. Available: {available}"
+            )
+
+        # Execute the transition
+        resp = self.session.post(url, json={"transition": {"id": close_transition["id"]}})
+        if resp.status_code not in (200, 204):
+            raise JiraError(ticket_id, resp.status_code, resp.text[:200])
+
+        logger.info("Closed Jira ticket %s", ticket_id)
+
     def test_connection(self) -> bool:
         """Test if the Jira connection is working."""
         try:

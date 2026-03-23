@@ -165,7 +165,7 @@ def process_ticket(jira: JiraClient, ticket_id: str, snow: SnowAutomation | None
             continue  # Show preview again
 
         if action == "Send to ServiceNow":
-            success = _send_to_snow(snow, user_name, email_text, incident_number)
+            success = _send_to_snow(snow, jira, ticket_id, user_name, email_text, incident_number)
             if success:
                 # Also save a copy locally
                 path = save_email(
@@ -214,6 +214,8 @@ def _edit_text(text: str) -> str:
 
 def _send_to_snow(
     snow: SnowAutomation,
+    jira: JiraClient,
+    ticket_id: str,
     user_name: str,
     email_text: str,
     incident_number: str | None,
@@ -288,6 +290,14 @@ def _send_to_snow(
         snow.resolve_incident()
 
         console.print("[bold green]Incident resolved successfully![/]")
+
+        # Close the Jira ticket
+        try:
+            jira.close_issue(ticket_id)
+            console.print(f"[bold green]Jira ticket {ticket_id} closed![/]")
+        except Exception as e:
+            console.print(f"[yellow]SNOW resolved but could not close Jira ticket: {e}[/]")
+
         return True
 
     except SnowAutomationError as e:
