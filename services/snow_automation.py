@@ -4,6 +4,8 @@ Uses classic ServiceNow URLs (incident.do, incident_list.do) to avoid
 the Next Experience (Polaris) shadow DOM that hides elements from Selenium.
 """
 
+from __future__ import annotations
+
 import logging
 import time
 import urllib.parse

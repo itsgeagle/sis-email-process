@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """SIS Email Process Suite — Interactive CLI for generating and sending access emails."""
 
+from __future__ import annotations
+
 import logging
 import os
 import shutil

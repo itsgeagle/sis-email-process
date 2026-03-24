@@ -1,5 +1,7 @@
 """Centralized configuration for the SIS Email Process suite."""
 
+from __future__ import annotations
+
 import logging
 from pathlib import Path
 

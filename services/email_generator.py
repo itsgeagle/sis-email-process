@@ -3,6 +3,8 @@
 Classification logic matches the original generate_template.py process_subtasks() exactly.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import re
