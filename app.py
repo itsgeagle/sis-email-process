@@ -236,20 +236,28 @@ def _send_to_snow(
                 incident_number = None
 
         if not incident_number:
-            # Search by user name
+            # Search by full user name first.
             console.print(f"[cyan]Searching ServiceNow for '{user_name}'...[/]")
             incidents = snow.find_incident_by_search(user_name)
+            loose_match = False
 
             if not incidents:
-                console.print("[yellow]No incidents found. Trying last name only...[/]")
+                # Fall back to a last-name-only search, but flag it: a last-name
+                # match may belong to a completely different person, so we must
+                # never post to it without the user explicitly confirming.
+                console.print("[yellow]No exact match. Trying last name only...[/]")
                 try:
                     last, _ = parse_name(user_name)
                     incidents = snow.find_incident_by_search(last)
+                    loose_match = bool(incidents)
                 except ValueError:
                     pass
 
             if not incidents:
-                console.print("[red]No matching incidents found in ServiceNow.[/]")
+                # Nothing found at all — stop, don't guess.
+                console.print(
+                    f"[red]No matching incidents found in ServiceNow for '{user_name}'.[/]"
+                )
                 manual = questionary.text(
                     "Enter incident number manually (or leave blank to skip):",
                     style=PROMPT_STYLE,
@@ -258,22 +266,38 @@ def _send_to_snow(
                     snow.open_incident(manual.strip())
                 else:
                     return False
-            elif len(incidents) == 1:
-                inc = incidents[0]
-                console.print(f"[green]Found: {inc['number']} — {inc['short_description']}[/]")
-                snow.open_incident(inc["number"])
             else:
-                # Multiple results — let user pick
+                # Candidates found. NEVER auto-post — always show what was found
+                # and require an explicit selection, so the email can't land on a
+                # stranger who merely shares the last name.
+                if loose_match:
+                    console.print(
+                        f"[yellow]No incident matched '{user_name}' exactly. "
+                        f"The following are loose matches on last name only — "
+                        f"verify each belongs to the right person before selecting:[/]"
+                    )
+                else:
+                    console.print(
+                        f"[green]Found {len(incidents)} candidate incident(s) "
+                        f"for '{user_name}':[/]"
+                    )
+                for inc in incidents:
+                    console.print(f"  • {inc['number']} — {inc['short_description']}")
+
                 choices = [
                     f"{inc['number']} — {inc['short_description']}"
                     for inc in incidents
                 ]
                 choices.append("Enter manually")
+                choices.append("None of these — skip this ticket")
                 choice = questionary.select(
-                    "Multiple incidents found. Select one:",
+                    "Select the correct incident:",
                     choices=choices,
                     style=PROMPT_STYLE,
                 ).ask()
+                if choice is None or choice == "None of these — skip this ticket":
+                    console.print("[yellow]No incident selected — skipping this ticket.[/]")
+                    return False
                 if choice == "Enter manually":
                     manual = questionary.text("Incident number:", style=PROMPT_STYLE).ask()
                     if not manual or not manual.strip():
