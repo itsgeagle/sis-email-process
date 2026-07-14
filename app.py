@@ -153,29 +153,30 @@ def process_ticket(jira: JiraClient, ticket_id: str, snow: SnowAutomation | None
             return result
 
         if action == "Copy to clipboard":
-            try:
-                subprocess.run(
-                    ["pbcopy"] if sys.platform == "darwin"
-                    else ["clip.exe"] if sys.platform == "win32"
-                    else ["xclip", "-selection", "clipboard"],
-                    input=email_text.encode(),
-                    check=True,
-                )
-                console.print("[green]Copied to clipboard![/]")
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                console.print("[red]Failed to copy — clipboard tool not available.[/]")
+            _copy_to_clipboard(email_text)
             continue  # Show preview again
 
         if action == "Send to ServiceNow":
-            success = _send_to_snow(snow, jira, ticket_id, user_name, email_text, incident_number)
-            if success:
+            outcome = _send_to_snow(snow, jira, ticket_id, user_name, email_text, incident_number)
+            if outcome == "sent":
                 # Also save a copy locally
                 path = save_email(
                     user_name, str(config.OUTPUT_FOLDER), email_text, ticket_id, incident_number
                 )
                 result["action"] = "Sent + Saved"
                 result["status"] = "Resolved in ServiceNow"
-            else:
+            elif outcome == "copied":
+                # SNOW match failed — user is emailing manually. Save a local copy
+                # so the text is never lost even if the clipboard was unavailable.
+                path = save_email(
+                    user_name, str(config.OUTPUT_FOLDER), email_text, ticket_id, incident_number
+                )
+                result["action"] = "Copied"
+                result["status"] = f"Send manually — copied to clipboard, saved to {path}"
+            elif outcome == "skipped":
+                result["action"] = "Skipped"
+                result["status"] = "No incident matched — skipped"
+            else:  # "error"
                 result["action"] = "SNOW Error"
                 result["status"] = "Check browser"
             return result
@@ -214,6 +215,23 @@ def _edit_text(text: str) -> str:
     return edited if edited is not None else text
 
 
+def _copy_to_clipboard(text: str) -> bool:
+    """Copy text to the system clipboard. Returns True on success."""
+    try:
+        subprocess.run(
+            ["pbcopy"] if sys.platform == "darwin"
+            else ["clip.exe"] if sys.platform == "win32"
+            else ["xclip", "-selection", "clipboard"],
+            input=text.encode(),
+            check=True,
+        )
+        console.print("[green]Copied to clipboard![/]")
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        console.print("[red]Failed to copy — clipboard tool not available.[/]")
+        return False
+
+
 def _send_to_snow(
     snow: SnowAutomation,
     jira: JiraClient,
@@ -221,8 +239,13 @@ def _send_to_snow(
     user_name: str,
     email_text: str,
     incident_number: str | None,
-) -> bool:
-    """Find the incident in ServiceNow, post the email, and resolve it."""
+) -> str:
+    """Find the incident in ServiceNow, post the email, and resolve it.
+
+    Returns one of: "sent" (resolved), "copied" (SNOW match failed, user is
+    emailing manually and the email text was copied to the clipboard),
+    "skipped" (no incident selected), or "error" (automation failure).
+    """
     try:
         if incident_number:
             use_known = questionary.confirm(
@@ -254,18 +277,33 @@ def _send_to_snow(
                     pass
 
             if not incidents:
-                # Nothing found at all — stop, don't guess.
+                # Nothing found at all — stop, don't guess. The user may need to
+                # email manually, so always offer to grab the email text.
                 console.print(
                     f"[red]No matching incidents found in ServiceNow for '{user_name}'.[/]"
                 )
-                manual = questionary.text(
-                    "Enter incident number manually (or leave blank to skip):",
+                COPY = "Copy email text to clipboard (send manually)"
+                MANUAL = "Enter incident number manually"
+                SKIP = "Skip this ticket"
+                fallback = questionary.select(
+                    "No incident matched by name. What next?",
+                    choices=[COPY, MANUAL, SKIP],
                     style=PROMPT_STYLE,
                 ).ask()
-                if manual and manual.strip():
-                    snow.open_incident(manual.strip())
-                else:
-                    return False
+                if fallback == COPY:
+                    _copy_to_clipboard(email_text)
+                    return "copied"
+                if fallback == MANUAL:
+                    manual = questionary.text(
+                        "Incident number (leave blank to skip):",
+                        style=PROMPT_STYLE,
+                    ).ask()
+                    if manual and manual.strip():
+                        snow.open_incident(manual.strip())
+                    else:
+                        return "skipped"
+                else:  # SKIP or Ctrl+C
+                    return "skipped"
             else:
                 # Candidates found. NEVER auto-post — always show what was found
                 # and require an explicit selection, so the email can't land on a
@@ -284,24 +322,31 @@ def _send_to_snow(
                 for inc in incidents:
                     console.print(f"  • {inc['number']} — {inc['short_description']}")
 
+                COPY = "None of these — copy email text to clipboard (send manually)"
+                MANUAL = "Enter manually"
+                SKIP = "None of these — skip this ticket"
                 choices = [
                     f"{inc['number']} — {inc['short_description']}"
                     for inc in incidents
                 ]
-                choices.append("Enter manually")
-                choices.append("None of these — skip this ticket")
+                choices.append(MANUAL)
+                choices.append(COPY)
+                choices.append(SKIP)
                 choice = questionary.select(
                     "Select the correct incident:",
                     choices=choices,
                     style=PROMPT_STYLE,
                 ).ask()
-                if choice is None or choice == "None of these — skip this ticket":
+                if choice is None or choice == SKIP:
                     console.print("[yellow]No incident selected — skipping this ticket.[/]")
-                    return False
-                if choice == "Enter manually":
+                    return "skipped"
+                if choice == COPY:
+                    _copy_to_clipboard(email_text)
+                    return "copied"
+                if choice == MANUAL:
                     manual = questionary.text("Incident number:", style=PROMPT_STYLE).ask()
                     if not manual or not manual.strip():
-                        return False
+                        return "skipped"
                     snow.open_incident(manual.strip())
                 else:
                     inc_num = choice.split(" — ")[0]
@@ -324,12 +369,12 @@ def _send_to_snow(
         except Exception as e:
             console.print(f"[yellow]SNOW resolved but could not close Jira ticket: {e}[/]")
 
-        return True
+        return "sent"
 
     except SnowAutomationError as e:
         console.print(f"[red]ServiceNow automation error: {e}[/]")
         console.print("[yellow]The browser is still open — you can complete the action manually.[/]")
-        return False
+        return "error"
 
 
 # ---------------------------------------------------------------------------
